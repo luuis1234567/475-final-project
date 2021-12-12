@@ -1,0 +1,204 @@
+---
+title: "protein_clustering"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = F,warning = F)
+```
+
+# 读取数据
+```{r}
+#install.packages("seqinr")
+library(seqinr)
+ama<-read.alignment("/Users/zhouyi/Downloads/AmargRepeats.fasta",format = "fasta")
+#m<-as.matrix.alignment(ama)
+#write.csv(m,"amarg.csv")
+
+```
+
+# 将AmargRepeats.fasta整理为excel格式
+```{r}
+AmargRepeats<-data.frame(nb=ama$nb,nam=ama$nam,seq=unlist(ama$seq),com=ama$com)
+write.csv(AmargRepeats,"AmargRepeats.csv",row.names = FALSE)
+```
+
+
+# 基于alignment score的层次聚类
+alignment score
+```{r}
+d1<-dist.alignment(ama)
+hcl<-hclust(d1)
+plot(hcl,labels=1:284)
+```
+从上面的dendrogarm来看，我们不容易确定聚类的K，我们对比选择不同K对应的簇内样本数
+
+
+```{r}
+for(i in 2:10){
+  cut_avg <- cutree(hcl, k = i)
+  print(paste("k=",i,seq=""))
+  print(table(cut_avg))
+  print("---------------------------------------")
+  
+}
+
+
+```
+我们发现k=5样本的分布稍微更平衡一点。所以我们选择K=5。
+```{r}
+cut_avg5 <- cutree(hcl, k = 5)
+#将聚类结果加到原始数据上
+AmargRepeats$y1<-cut_avg5
+AmargRepeats
+```
+
+
+# 2 one-hot 编码 sequence,然后取euclidean距离，用kmeans聚类
+重新计算几何距离
+```{r}
+library(ggpubr)
+library(factoextra)
+amaseq<-unlist(ama$seq)
+len<-nchar(unlist(ama$seq))
+ch<-unlist(strsplit(unlist(ama$seq),""))
+#序列最大长度为31，序列长度不足31用O填补
+amaseq_add<-amaseq
+for (i in 1:length(amaseq)) {
+  add<-paste(rep("o",31-nchar(amaseq[i])),collapse = "")
+  amaseq_add[i]<-paste(amaseq[i],add,sep = "")
+}
+
+#将序列转换为矩阵
+tmp<-strsplit(amaseq_add,"")
+
+m<-c()
+for (i in 1:length(tmp)) {
+  m<-rbind(m,tmp[[i]])
+}
+colnames(m)<-paste("f",1:31,sep = "")
+rownames(m)<-ama$nam
+df<-data.frame(m)
+#one-hot编码
+X<-model.matrix(~.,data = df)[,-1]
+#kmeans聚类
+km<-kmeans(X,centers = 5,nstart = 10,iter.max = 100)
+#将聚类结果加到原始数据上
+AmargRepeats$y2<-km$cluster
+fviz_cluster(km, data = X[, -5],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800","#EE0099","#BB3099"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# experiment design
+基于词频term frequence的文本特征提取
+
+```{r}
+#统计不同字母
+chr<-sort(unique(unlist(strsplit(AmargRepeats$seq,""))))
+#计算每个序列中不同字母出现的次数，得到文档词条矩阵document-term matrix
+dtm<-matrix(rep(0,284*length(chr)),ncol =length(chr))
+colnames(dtm)<-chr
+rownames(dtm)<-AmargRepeats$nam
+#将序列用空格分割开
+seq2<-strsplit(AmargRepeats$seq,"")
+for (i in 1:284) {
+  seqi<-seq2[[i]]
+  #计算第i个序列不同字母的个数
+  tab<-table(seqi)
+  for (j in 1:length(chr)) {
+    count<-tab[chr[j]]
+    if(is.na(count)) count<-0
+    dtm[i,j]<-count
+  }
+}
+head(dtm)
+
+```
+对上述dtm标准化后进行kmeans聚类
+```{r}
+km2<-kmeans(scale(dtm),centers = 5,nstart = 10,iter.max = 100)
+#将聚类结果加到原始数据上
+AmargRepeats$y3<-km2$cluster
+fviz_cluster(km2, data = dtm[, -5],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800","#EE0099","#BB3099"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+```
+
+
+
+# 聚类结果比较
+```{r}
+library(Radviz)
+table1 <- table(AmargRepeats$y1,AmargRepeats$y2)
+table2 <- table(AmargRepeats$y1,AmargRepeats$y3)
+table3 <- table(AmargRepeats$y2,AmargRepeats$y3)
+plot(table1)
+plot(table2)
+plot(table3)
+```
+从上面的对比结果，我们发现，不同的距离度量，即使我们选择的K一样，产生的聚类结果很不一样，
+比如我们y2，是用one-hot编码序列，然后计算欧式距离后用Kmans聚类得到结果，
+y3是我们将序列当作文本内容来处理，然后进行Kmenas聚类，我们发现y2，y3的结果很不一样。
+说明聚类模型很依赖距离度量，不同的距离度量产生不同的聚类结果，
+同时对不同聚类的结果，我们有不同的解释，这种解释需要结合具体的数据含义，这样说明聚类的结果可能不可控，
+通常用于探索数据规律，发现数据中有趣的模式。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
